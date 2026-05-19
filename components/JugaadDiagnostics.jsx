@@ -290,8 +290,17 @@ export default function App() {
     if(!imgPreview) return; setImgLoading(true);
     const base64=imgPreview.split(",")[1]; const mt=imgFile?.type||"image/jpeg";
     try {
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:CLAUDE_MODEL,max_tokens:800,messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:mt,data:base64}},{type:"text",text:`Analyse this skin image for rural India triage. JSON only: {"condition":"4-6 words","severity":"MILD"|"MODERATE"|"SEVERE","description":"1-2 sentences for health worker","action":"home_care"|"visit_phc"|"emergency","home_care":["step1","step2","step3"],"refer_note":"short note if needed"}`}]}]})});
-      const d=await res.json(); const t=d.content?.[0]?.text||"{}"; const p=JSON.parse(t.replace(/```json|```/g,"").trim());
+    const res = await fetch("/api/claude", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    message: "Analyse this skin image for rural India triage",
+    image: base64
+  })
+});
+
+const data = await res.json();
+setImgResult(data);   const d=await res.json(); const t=d.content?.[0]?.text||"{}"; const p=JSON.parse(t.replace(/```json|```/g,"").trim());
       setImgResult(p); if(p.condition!=="Not a skin condition") speak(`${p.condition}. ${p.description}`,lang);
     } catch { setImgResult({condition:"Analysis failed",severity:"MILD",description:"Could not analyse. Try again.",action:"visit_phc",home_care:[],refer_note:""}); }
     setImgLoading(false);
@@ -303,7 +312,22 @@ export default function App() {
     setChatMessages(p=>[...p,{role:"user",text:msg}]); setChatInput(""); setChatLoading(true);
     const history=[...chatMessages,{role:"user",text:msg}];
     try {
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:CLAUDE_MODEL,max_tokens:600,system:`You are Dr. Meena Singh, PHC doctor at Barmer, Rajasthan. Reply in ${lang==="en"?"simple English":lang==="mr"?"Hindi with some Marwari":"simple conversational Hindi"}. Be warm and concise. No markdown.`,messages:history.map(m=>({role:m.role==="user"?"user":"assistant",content:m.text}))})});
+      const res = await fetch("/api/claude", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    message: msg
+  })
+});
+
+const d = await res.json();
+
+setChatMessages(prev => [
+  ...prev,
+  { role: "assistant", text: d.explanation || "No response" }
+]);
+
+speak(d.explanation || "", lang);
       const d=await res.json(); const reply=d.content?.[0]?.text||"Maafi, thodi der baad try karein.";
       setChatMessages(p=>[...p,{role:"assistant",text:reply}]); speak(reply,lang);
     } catch { setChatMessages(p=>[...p,{role:"assistant",text:"Network error. Please try again."}]); }
@@ -345,7 +369,20 @@ Respond JSON only (no markdown):
     setHelpMessages(p=>[...p,{role:"user",text:m}]); setHelpInput(""); setHelpLoading(true);
     const history=[...helpMessages,{role:"user",text:m}];
     try {
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:CLAUDE_MODEL,max_tokens:700,system:`You are an expert ASHA (Accredited Social Health Activist) Copilot AI for rural India. The user is an ASHA worker who may face emergencies, clinical questions, procedure doubts, referral confusion, or any field problem. Reply in ${lang==="en"?"simple English":lang==="mr"?"simple Hindi with Marwari words":"simple conversational Hindi"}. Be very practical, warm, and direct. Use numbered steps when giving instructions. Prioritize patient safety. Mention 108 if life-threatening. No markdown formatting. Keep responses under 150 words.`,messages:history.map(m=>({role:m.role==="user"?"user":"assistant",content:m.text}))})});
+      const res = await fetch("/api/claude", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ message: m })
+});
+
+const d = await res.json();
+
+setHelpMessages(prev => [
+  ...prev,
+  { role: "assistant", text: d.explanation || "Try again" }
+]);
+
+speak(d.explanation || "", lang);
       const d=await res.json(); const reply=d.content?.[0]?.text||"Khed hai, abhi jawab dene mein mushkil aa rahi hai.";
       setHelpMessages(p=>[...p,{role:"assistant",text:reply}]); speak(reply,lang);
     } catch { setHelpMessages(p=>[...p,{role:"assistant",text:"Network error. Please try again."}]); }
@@ -357,8 +394,26 @@ Respond JSON only (no markdown):
     setLoading(true);
     const symptomList=selectedSymptoms.map(id=>SYMPTOMS.find(s=>s.id===id)?.en).join(", ");
     try {
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:CLAUDE_MODEL,max_tokens:1000,messages:[{role:"user",content:`Rural India triage. Age:${patient.age}, Sex:${patient.sex==="M"?"Male":"Female"}, Symptoms:${symptomList}${vitals.spo2?`, SpO2:${vitals.spo2}%`:""}${vitals.temp?`, Temp:${vitals.temp}°F`:""}\nJSON only: {"level":"RED"|"YELLOW"|"GREEN","condition":"3-5 words","confidence":0-100,"first_aid":["s1","s2","s3"],"call_108":true|false,"extra_symptom":"phrase"}`}]})});
-      const d=await res.json(); const parsed=JSON.parse((d.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim());
+      const res = await fetch("/api/claude", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    message: `
+Age:${patient.age}
+Sex:${patient.sex}
+Symptoms:${selectedSymptoms.join(",")}
+SpO2:${vitals.spo2}
+Temp:${vitals.temp}
+`
+  })
+});
+
+const data = await res.json();
+
+setResult(data);
+setStep(3);
+speakResult(data);
+        const d=await res.json(); const parsed=JSON.parse((d.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim());
       setResult(parsed); setStep(3); speakResult(parsed);
       setCases(p=>[{id:p.length+1,name:patient.name||"Unknown",age:parseInt(patient.age),sex:patient.sex,village:patient.village,asha:patient.asha,symptoms:selectedSymptoms,spo2:vitals.spo2?parseFloat(vitals.spo2):98,temp:vitals.temp?parseFloat(vitals.temp):98.6,level:parsed.level,condition:parsed.condition,time:new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"}),resolved:false},...p]);
     } catch { setResult({level:"YELLOW",condition:"Unable to analyze",confidence:0,first_aid:["Check vitals","Contact PHC doctor","Monitor closely"],call_108:false,extra_symptom:"any worsening"}); setStep(3); }
