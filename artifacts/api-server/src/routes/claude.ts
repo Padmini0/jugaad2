@@ -1,5 +1,5 @@
 import { Router } from "express";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import rateLimit from "express-rate-limit";
 
 const router = Router();
@@ -12,13 +12,8 @@ const claudeRateLimit = rateLimit({
   message: { error: "Too many requests. Please wait a moment and try again." },
 });
 
-const xai = new OpenAI({
-  apiKey: process.env.XAI_API_KEY || "",
-  baseURL: "https://api.x.ai/v1",
-});
-
-const MODEL = "grok-3-mini";
-const VISION_MODEL = "grok-2-vision-1212";
+const genAI = new GoogleGenerativeAI(process.env.XAI_API_KEY || "");
+const MODEL = "gemini-2.0-flash";
 
 function safeParse(text: string) {
   try {
@@ -28,12 +23,13 @@ function safeParse(text: string) {
   }
 }
 
-async function generateText(prompt: string, system?: string): Promise<string> {
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-  if (system) messages.push({ role: "system", content: system });
-  messages.push({ role: "user", content: prompt });
-  const res = await xai.chat.completions.create({ model: MODEL, messages });
-  return res.choices[0]?.message?.content || "";
+async function generateText(prompt: string, systemInstruction?: string): Promise<string> {
+  const model = genAI.getGenerativeModel({
+    model: MODEL,
+    ...(systemInstruction ? { systemInstruction } : {}),
+  });
+  const result = await model.generateContent(prompt);
+  return result.response.text();
 }
 
 router.post("/claude", claudeRateLimit, async (req, res) => {
@@ -42,16 +38,18 @@ router.post("/claude", claudeRateLimit, async (req, res) => {
 
     // Multi-turn chat (pregnancy flow and general messages array)
     if (messages && Array.isArray(messages) && messages.length > 0) {
-      const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-      if (system) chatMessages.push({ role: "system", content: system });
-      for (const m of messages as Array<{ role: string; content: string }>) {
-        chatMessages.push({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: m.content,
-        });
-      }
-      const res2 = await xai.chat.completions.create({ model: MODEL, messages: chatMessages });
-      const text = res2.choices[0]?.message?.content || "";
+      const history = messages.map((m: { role: string; content: string }) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      }));
+      const model = genAI.getGenerativeModel({
+        model: MODEL,
+        ...(system ? { systemInstruction: system } : {}),
+      });
+      const lastMsg = history[history.length - 1];
+      const chat = model.startChat({ history: history.slice(0, -1) });
+      const result = await chat.sendMessage(lastMsg.parts[0].text);
+      const text = result.response.text();
       return res.status(200).json({ content: [{ type: "text", text }] });
     }
 
@@ -61,20 +59,16 @@ router.post("/claude", claudeRateLimit, async (req, res) => {
 
     // Image analysis
     if (image) {
-      const mimeType = mediaType || "image/jpeg";
-      const result = await xai.chat.completions.create({
-        model: VISION_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image_url",
-                image_url: { url: `data:${mimeType};base64,${image}` },
-              },
-              {
-                type: "text",
-                text: `You are a medical image analysis assistant for rural India ASHA workers.
+      const model = genAI.getGenerativeModel({ model: MODEL });
+      const mimeType = (mediaType || "image/jpeg") as
+        | "image/jpeg"
+        | "image/png"
+        | "image/gif"
+        | "image/webp";
+      const result = await model.generateContent([
+        { inlineData: { mimeType, data: image } },
+        {
+          text: `You are a medical image analysis assistant for rural India ASHA workers.
 Analyse this skin/medical image and respond with ONLY valid JSON (no markdown, no extra text):
 {
   "triage": "EMERGENCY" or "PHC" or "HOME_CARE",
@@ -84,12 +78,9 @@ Analyse this skin/medical image and respond with ONLY valid JSON (no markdown, n
   "confidence": <number 0-100>,
   "explanation": "1-2 sentence plain language explanation for ASHA worker"
 }`,
-              },
-            ],
-          },
-        ],
-      });
-      const rawText = result.choices[0]?.message?.content || "";
+        },
+      ]);
+      const rawText = result.response.text();
       const parsed = safeParse(rawText);
       return res.status(200).json({
         triage:      parsed?.triage      || "PHC",
@@ -147,9 +138,9 @@ For emergencies always mention calling 108. No markdown formatting.`
     req.log.error({ err }, "[/api/claude] error");
 
     const msg = e?.message || "Server error";
-    const isAuth = msg.includes("quota") || msg.includes("billing") || msg.includes("API key") || msg.includes("Unauthorized");
+    const isAuth = msg.includes("quota") || msg.includes("billing") || msg.includes("API_KEY") || msg.includes("API key");
     const explanation = isAuth
-      ? "Grok API key issue. Check that XAI_API_KEY is valid and has quota."
+      ? "API key issue. Check that XAI_API_KEY is a valid Gemini key with quota."
       : msg;
 
     return res.status(200).json({
