@@ -1,9 +1,8 @@
 // pages/api/claude.js
-// Secure proxy for Anthropic Claude (PHC AI Triage System)
+// Stable PHC AI Triage Backend (FIXED VERSION)
 
 import Anthropic from "@anthropic-ai/sdk";
 
-// Allow large image uploads (base64)
 export const config = {
   api: {
     bodyParser: {
@@ -17,7 +16,7 @@ const anthropic = new Anthropic();
 const SYSTEM_PROMPT = `
 You are a medical triage assistant for rural healthcare workers.
 
-You MUST return ONLY valid JSON in this format:
+You MUST return ONLY valid JSON:
 
 {
   "triage": "EMERGENCY | PHC | HOME_CARE",
@@ -29,14 +28,45 @@ You MUST return ONLY valid JSON in this format:
 }
 
 STRICT RULES:
-- Output ONLY JSON (no markdown, no text outside JSON)
-- Always include diagnosis, steps, triage
-- If life-threatening symptoms exist, choose EMERGENCY
-- Be concise, practical, and medically safe
+- ONLY JSON (no markdown, no text outside JSON)
+- Be medically safe
+- If life-threatening → EMERGENCY
+- Keep responses concise and practical
 `;
 
+function safeJsonParse(text) {
+  if (!text) return null;
+
+  const cleaned = text
+    .replace(/```json/g, "")
+    .replace(/```/g, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    return null;
+  }
+}
+
+function extractList(text, keyword) {
+  if (!text) return [];
+
+  const regex = new RegExp(
+    `${keyword}[:\\-]\\s*([\\s\\S]*?)(\\n\\n|$)`,
+    "i"
+  );
+
+  const match = text.match(regex);
+  if (!match) return [];
+
+  return match[1]
+    .split("\n")
+    .map((s) => s.replace(/[-•]/g, "").trim())
+    .filter(Boolean);
+}
+
 export default async function handler(req, res) {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -49,13 +79,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { messages, message, image, max_tokens, model, system } = req.body;
+    const { message, messages, image, max_tokens, model, system } = req.body;
 
-    // Support both old + new frontend formats
+    // FIX 1: safer input handling
     const userText =
       message ||
       messages?.[0]?.content ||
-      "Analyze this medical case";
+      (image ? "Analyze this medical image" : "Analyze this medical case");
 
     const content = [
       {
@@ -64,7 +94,7 @@ export default async function handler(req, res) {
       },
     ];
 
-    // Attach image if present (base64 only)
+    // FIX 2: image support (safe fallback type)
     if (image) {
       content.push({
         type: "image",
@@ -90,54 +120,31 @@ export default async function handler(req, res) {
 
     const rawText = response.content?.[0]?.text || "";
 
-    // Try JSON parse
-    let parsed = null;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch (e) {
-      parsed = null;
-    }
+    // FIX 3: safe parsing
+    const parsed = safeJsonParse(rawText);
 
-    // Helper: extract fallback lists
-    const extractList = (text, keyword) => {
-      const regex = new RegExp(
-        `${keyword}[:\\-]\\s*([\\s\\S]*?)(\\n\\n|$)`,
-        "i"
-      );
-      const match = text.match(regex);
-
-      if (!match) return [];
-
-      return match[1]
-        .split("\n")
-        .map((s) => s.replace(/[-•]/g, "").trim())
-        .filter(Boolean);
-    };
-
-    // Final normalized response (CRITICAL FIX)
+    // FIX 4: normalized response (ALWAYS SAFE FOR FRONTEND)
     const normalized = parsed || {
       triage: "PHC",
       diagnosis: extractList(rawText, "diagnosis"),
       steps: extractList(rawText, "steps"),
       red_flags: [],
-      confidence: 0.5,
-      explanation: rawText,
+      confidence: 0.3,
+      explanation: rawText || "Unable to analyze case",
     };
 
     return res.status(200).json(normalized);
+
   } catch (err) {
     console.error("[claude.js error]", err);
 
-    const status = err?.status || 500;
-
-    return res.status(status).json({
-      error: "AI processing failed",
+    return res.status(500).json({
       triage: "PHC",
       diagnosis: [],
-      steps: ["Retry analysis"],
+      steps: ["Retry analysis", "Check network", "Contact PHC doctor"],
       red_flags: [],
-      confidence: 0.2,
-      explanation: "System error occurred",
+      confidence: 0.1,
+      explanation: "System error occurred. Please try again.",
     });
   }
 }
