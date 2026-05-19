@@ -496,7 +496,7 @@ Respond JSON only (no markdown):
             {/* Hair */}
             <path d="M176 168 Q178 130 210 126 Q242 130 244 168 Q230 155 210 154 Q190 155 176 168Z" fill="#1a1a1a"/>
             {/* Bun */}
-            <circle cx="220" cy="130" r="18" fill="#2a2a2a"/>
+            <circle cx="220" cy="130" r="15" fill="#2a2a2a"/>
             {/* Bindi */}
             <circle cx="210" cy="160" r="3.5" fill="#eb2f96"/>
             {/* Mangalsutra hint */}
