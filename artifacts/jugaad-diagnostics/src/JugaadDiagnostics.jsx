@@ -381,7 +381,7 @@ Respond JSON only (no markdown):
     setLoading(true);
     const symptomList = selectedSymptoms.map(id => SYMPTOMS.find(s => s.id === id)?.en).join(", ");
     try {
-      const res = await fetch("/api/claude", {
+      const res = await fetch(`${API}/api/claude`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: `\nAge: ${patient.age}\nSex: ${patient.sex}\nSymptoms: ${symptomList || "None reported"}\nSpO2: ${vitals.spo2}\nTemp: ${vitals.temp}\n        ` })
