@@ -1,4 +1,26 @@
-// pages/api/claude.js — FIXED
+// pages/api/claude.js — FULLY FIXED
+//
+// The frontend has 4 different callers, each sending { message } or { message, image }
+// and each reading a DIFFERENT shape from the response:
+//
+//  analyzeWithClaude  → sends { message }  → reads data.level, data.condition,
+//                                             data.confidence, data.first_aid,
+//                                             data.call_108, data.extra_symptom
+//
+//  analyseImage       → sends { message, image, mediaType }
+//                                           → reads data.triage, data.diagnosis,
+//                                             data.steps, data.red_flags,
+//                                             data.confidence, data.explanation
+//
+//  sendChat           → sends { message }  → reads data.explanation
+//
+//  sendHelp           → sends { message }  → reads data.explanation
+//
+//  analysePregWith    → calls api.anthropic.com directly (intercepted by index.js)
+//                       reads d.content[0].text and parses JSON itself — handled fine
+//
+// This backend must detect which caller is sending the request and return the
+// exact shape that caller reads.
 
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -8,92 +30,169 @@ export const config = {
 
 const anthropic = new Anthropic();
 
+// ── helpers ────────────────────────────────────────────────────────────────
+function safeParse(text) {
+  try {
+    return JSON.parse(text.replace(/```json|```/g, "").trim());
+  } catch {
+    return null;
+  }
+}
+
+async function callClaude({ messages, system, max_tokens = 1024 }) {
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens,
+    messages,
+    ...(system ? { system } : {}),
+  });
+  return response.content?.[0]?.text || "";
+}
+
+// ── handler ────────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    return res.status(200).end();
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const { messages, system, max_tokens, model, message, image } = req.body;
+    const { messages, system, max_tokens, message, image, mediaType } = req.body;
 
-    // ── BUG 1 FIX ─────────────────────────────────────────────────────────────
-    // The old claude.js expected { message, image } (its own custom format)
-    // BUT the frontend sends { messages: [...], system, max_tokens } — the full
-    // Anthropic messages array. The backend was completely ignoring `messages`
-    // and building its own content array from `message` (a string), which meant
-    // triage / chat / help / pregnancy all got the wrong data or nothing at all.
-    //
-    // FIX: if `messages` array is present (all calls except image), use it
-    // directly. Only fall back to the { message, image } format if needed.
-    // ──────────────────────────────────────────────────────────────────────────
-
-    let finalMessages;
-    let finalSystem = system || undefined;
-
+    // ── PATH A: full Anthropic messages array (pregnancy call goes here via
+    //           index.js fetch intercept — just proxy it straight through) ──
     if (messages && Array.isArray(messages) && messages.length > 0) {
-      // Standard path: frontend sent a full messages array (triage, chat, help, pregnancy)
-      finalMessages = messages;
-    } else if (message || image) {
-      // Legacy / image path: build messages from { message, image }
-      const content = [];
-      if (message) content.push({ type: "text", text: message });
-      if (image) {
-        content.push({
+      const response = await anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: max_tokens || 1024,
+        messages,
+        ...(system ? { system } : {}),
+      });
+      return res.status(200).json(response);
+    }
+
+    // ── PATH B: { message, image } — detect intent from content ───────────
+    if (!message && !image) {
+      return res.status(400).json({ error: "No message or messages provided" });
+    }
+
+    // ── IMAGE ANALYSIS ─────────────────────────────────────────────────────
+    if (image) {
+      const content = [
+        {
           type: "image",
           source: {
             type: "base64",
-            media_type: req.body.mediaType || "image/jpeg",
+            media_type: mediaType || "image/jpeg",
             data: image,
           },
-        });
-      }
-      finalMessages = [{ role: "user", content }];
-    } else {
-      return res.status(400).json({ error: "No messages or message provided" });
+        },
+        {
+          type: "text",
+          text: `You are a medical image analysis assistant for rural India ASHA workers.
+Analyse this skin/medical image and respond with ONLY valid JSON (no markdown, no extra text):
+{
+  "triage": "EMERGENCY" or "PHC" or "HOME_CARE",
+  "diagnosis": ["primary finding in plain language"],
+  "steps": ["step 1", "step 2", "step 3"],
+  "red_flags": ["any danger signs present"],
+  "confidence": <number 0-100>,
+  "explanation": "1-2 sentence plain language explanation for ASHA worker"
+}`,
+        },
+      ];
+
+      const rawText = await callClaude({
+        messages: [{ role: "user", content }],
+        max_tokens: 800,
+      });
+
+      const parsed = safeParse(rawText);
+      return res.status(200).json({
+        triage:      parsed?.triage      || "PHC",
+        diagnosis:   parsed?.diagnosis   || ["Unable to analyse image"],
+        steps:       parsed?.steps       || ["Consult PHC doctor"],
+        red_flags:   parsed?.red_flags   || [],
+        confidence:  parsed?.confidence  || 0,
+        explanation: parsed?.explanation || rawText || "Analysis inconclusive",
+      });
     }
 
-    // ── BUG 2 FIX ─────────────────────────────────────────────────────────────
-    // The old code had a hardcoded SYSTEM_PROMPT that forced JSON output in a
-    // specific shape { triage, diagnosis, steps, red_flags, confidence, explanation }
-    // BUT the frontend renders result.level / result.condition / result.first_aid
-    // / result.call_108 — completely different field names. This caused the result
-    // screen to render blank/undefined for every field.
-    //
-    // FIX: pass through the system prompt from the frontend if provided,
-    // otherwise use no system prompt. The prompts in the component already ask
-    // for the correct JSON schema with the right field names.
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── TRIAGE (main symptom analysis) ─────────────────────────────────────
+    // Detected by: message contains "Age:", "Symptoms:", "SpO2:", "Temp:"
+    const isTriageCall =
+      message.includes("Age:") &&
+      message.includes("Symptoms:");
 
-    const response = await anthropic.messages.create({
-      model:      model      || "claude-sonnet-4-20250514",
-      max_tokens: max_tokens || 1024,
-      messages:   finalMessages,
-      ...(finalSystem ? { system: finalSystem } : {}),
+    if (isTriageCall) {
+      const rawText = await callClaude({
+        system: `You are a medical triage assistant for rural India ASHA workers.
+Respond with ONLY valid JSON (no markdown, no extra text):
+{
+  "level": "RED" or "YELLOW" or "GREEN",
+  "condition": "most likely condition in 3-5 words",
+  "confidence": <number 0-100>,
+  "first_aid": ["step 1", "step 2", "step 3"],
+  "call_108": true or false,
+  "extra_symptom": "one symptom that would increase confidence"
+}
+RED = life-threatening emergency. YELLOW = needs PHC visit. GREEN = home care.`,
+        messages: [{ role: "user", content: message }],
+        max_tokens: 600,
+      });
+
+      const parsed = safeParse(rawText);
+      return res.status(200).json({
+        level:         parsed?.level         || "YELLOW",
+        condition:     parsed?.condition     || "Unable to determine",
+        confidence:    parsed?.confidence    || 0,
+        first_aid:     parsed?.first_aid     || ["Check vitals", "Contact PHC doctor", "Monitor closely"],
+        call_108:      parsed?.call_108      || false,
+        extra_symptom: parsed?.extra_symptom || "",
+      });
+    }
+
+    // ── CHAT / HELP (Dr. Meena Singh + ASHA Copilot) ───────────────────────
+    // Both send { message } and read data.explanation
+    const rawText = await callClaude({
+      system: `You are Dr. Meena Singh, PHC doctor at Barmer, Rajasthan, and an expert ASHA worker assistant.
+Reply in simple conversational Hindi (or English if the question is in English).
+Be warm, practical, and direct. Keep responses under 120 words.
+For emergencies always mention calling 108. No markdown formatting.`,
+      messages: [{ role: "user", content: message }],
+      max_tokens: 500,
     });
 
-    // ── BUG 3 FIX ─────────────────────────────────────────────────────────────
-    // The old code called safeParse() and normalizeResponse() which transformed
-    // the raw Anthropic response into a different shape, then returned THAT.
-    // But the frontend reads data.content[0].text (for most calls) or reads
-    // data.triage / data.diagnosis etc. (for triage). This mismatch meant the
-    // frontend never got parseable data.
-    //
-    // FIX: return the full raw Anthropic response. The frontend already knows
-    // how to read response.content[0].text and parse the JSON from it.
-    // ──────────────────────────────────────────────────────────────────────────
-
-    return res.status(200).json(response);
+    return res.status(200).json({
+      explanation: rawText || "Maafi, abhi jawab dene mein mushkil aa rahi hai. Dobara try karein.",
+    });
 
   } catch (err) {
     console.error("[/api/claude] error:", err?.status, err?.message);
 
     const status = err?.status || 500;
-    const message =
+    const errMsg =
       status === 401 ? "Invalid API key. Check ANTHROPIC_API_KEY in .env.local."
       : status === 429 ? "Rate limit hit. Wait a moment and try again."
       : status === 529 ? "Anthropic is overloaded. Try again shortly."
-      : err?.message || "Anthropic API error";
+      : err?.message || "Server error";
 
-    return res.status(status).json({ error: message });
+    // Return safe fallbacks so the UI doesn't crash regardless of which
+    // feature triggered the error
+    return res.status(200).json({
+      // triage fallback
+      level: "YELLOW", condition: "Unable to analyse", confidence: 0,
+      first_aid: ["Check vitals", "Contact PHC doctor", "Monitor closely"],
+      call_108: false, extra_symptom: "",
+      // image fallback
+      triage: "PHC", diagnosis: ["Analysis failed"], steps: ["Retry", "Contact PHC"],
+      red_flags: [], explanation: errMsg,
+    });
   }
 }
