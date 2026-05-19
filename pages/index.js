@@ -27,26 +27,21 @@ export default function Home() {
     const originalFetch = window.fetch;
 
     window.fetch = async function patchedFetch(url, options) {
-      // Only intercept direct Anthropic API calls
-      if (
-        typeof url === "string" &&
-        url.includes("api.anthropic.com/v1/messages")
-      ) {
-        // Rewrite URL to our backend proxy
-        return originalFetch("/api/claude", {
-          ...options,
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(options?.headers || {}),
-          },
-          // Body is already a JSON string — pass through unchanged
-        });
-      }
+  if (
+    typeof url === "string" &&
+    url.includes("api.anthropic.com/v1/messages")
+  ) {
+    return originalFetch("/api/claude", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: options?.body, // ✅ THIS IS THE FIX
+    });
+  }
 
-      // All other fetches are unaffected
-      return originalFetch(url, options);
-    };
+  return originalFetch(url, options);
+};
 
     // Cleanup: restore original fetch when the page unmounts
     return () => {
