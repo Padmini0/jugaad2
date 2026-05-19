@@ -8,7 +8,7 @@ AI-powered medical triage tool for ASHA workers in rural India — supporting sy
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 8080)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- Required env: `ANTHROPIC_API_KEY` — Anthropic API key (used by the API server for Claude AI calls)
+- Required env: `GROQ_API_KEY` — Groq API key (used by the API server for AI calls)
 
 ## Stack
 
