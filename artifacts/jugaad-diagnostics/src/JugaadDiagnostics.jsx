@@ -431,7 +431,7 @@ Respond JSON only (no markdown):
 
   const S = {
     app:   {fontFamily:"'Noto Sans','Noto Sans Devanagari',sans-serif",minHeight:"100vh",background:"#f4f3ee",color:"#1a1a1a"},
-    topBar:{background:"#1a472a",padding:"0 12px",display:"flex",alignItems:"center",justifyContent:"space-between",height:90,position:"sticky",top:0,zIndex:100,flexWrap:"wrap",gap:2},
+    topBar:{background:"#1a472a",padding:"0 12px",display:"flex",alignItems:"center",justifyContent:"space-between",height:100,position:"sticky",top:0,zIndex:100,flexWrap:"wrap",gap:2},
     topTitle:{color:"#fff",fontWeight:700,fontSize:16},
     topSub:{color:"#86efac",fontSize:10},
     navBtn:(a)=>({background:a?"#fff":"transparent",color:a?"#1a472a":"#fff",border:a?"none":"1px solid rgba(255,255,255,0.3)",borderRadius:18,padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:a?700:400,whiteSpace:"nowrap"}),
